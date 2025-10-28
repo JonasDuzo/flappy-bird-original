@@ -2,8 +2,22 @@ console.log("Carregado!");
 
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
-canvas.width = 400;
-canvas.height = 600;
+
+// Configurar tamanho do canvas baseado no container
+function resizeCanvas() {
+    const container = document.getElementById('gameContainer');
+    const rect = container.getBoundingClientRect();
+
+    // Manter proporção 2:3 (largura:altura)
+    canvas.width = 400;
+    canvas.height = 600;
+
+    // Desabilitar suavização para manter visual pixelado
+    ctx.imageSmoothingEnabled = false;
+}
+
+resizeCanvas();
+window.addEventListener('resize', resizeCanvas);
 
 // Carregar sons
 const sounds = {
@@ -146,7 +160,7 @@ function drawBase() {
 function updateBird(delta) {
     // Normalizar delta para 60 FPS como referência
     const normalizedDelta = delta * 60;
-    
+
     bird.velocity += bird.gravity * normalizedDelta;
     bird.y += bird.velocity * normalizedDelta;
 
@@ -164,7 +178,7 @@ function updateBird(delta) {
 function updatePipes(delta) {
     // Normalizar delta para 60 FPS como referência
     const normalizedDelta = delta * 60;
-    
+
     if (frameCount % 90 === 0) {
         const minTop = 80;
         const maxTop = base.y - pipeGap - 80;
@@ -269,6 +283,11 @@ function gameOver() {
 
 // Controles
 canvas.addEventListener('click', jump);
+canvas.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    jump();
+});
+
 document.addEventListener('keydown', (e) => {
     if (e.code === 'Space') {
         e.preventDefault();

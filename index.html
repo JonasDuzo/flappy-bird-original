@@ -3,13 +3,14 @@
 
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <title>Flappy Bird</title>
     <style>
         * {
             margin: 0;
             padding: 0;
             box-sizing: border-box;
+            -webkit-tap-highlight-color: transparent;
         }
 
         body {
@@ -19,15 +20,26 @@
             min-height: 100vh;
             background: #000;
             font-family: 'Arial', sans-serif;
+            overflow: hidden;
+            touch-action: none;
         }
 
         #gameContainer {
             position: relative;
-            width: 400px;
-            height: 600px;
+            width: min(400px, 100vw);
+            height: min(600px, 150vw);
+            max-height: 100vh;
             overflow: hidden;
             border: 3px solid #000;
             box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+        }
+
+        @media (max-width: 480px) {
+            #gameContainer {
+                width: 100vw;
+                height: 100vh;
+                border: none;
+            }
         }
 
         #gameCanvas {
@@ -36,6 +48,8 @@
             height: 100%;
             image-rendering: pixelated;
             image-rendering: crisp-edges;
+            image-rendering: -moz-crisp-edges;
+            -ms-interpolation-mode: nearest-neighbor;
         }
 
         #startScreen,
@@ -56,20 +70,22 @@
 
         #startScreen h1,
         #gameOverScreen h1 {
-            font-size: 48px;
+            font-size: clamp(32px, 8vw, 48px);
             margin-bottom: 20px;
             text-shadow: 3px 3px 0px #000;
         }
 
         #startScreen p,
         #gameOverScreen p {
-            font-size: 20px;
+            font-size: clamp(16px, 4vw, 20px);
             margin-bottom: 30px;
+            padding: 0 20px;
+            text-align: center;
         }
 
         button {
-            padding: 15px 40px;
-            font-size: 24px;
+            padding: clamp(10px, 3vw, 15px) clamp(30px, 8vw, 40px);
+            font-size: clamp(18px, 5vw, 24px);
             background: #ffa500;
             color: white;
             border: 3px solid #000;
@@ -91,10 +107,10 @@
 
         #score {
             position: absolute;
-            top: 30px;
+            top: clamp(20px, 5vh, 30px);
             left: 50%;
             transform: translateX(-50%);
-            font-size: 48px;
+            font-size: clamp(36px, 10vw, 48px);
             font-weight: bold;
             color: white;
             text-shadow: 3px 3px 0px #000;
@@ -102,7 +118,7 @@
         }
 
         #finalScore {
-            font-size: 36px;
+            font-size: clamp(28px, 7vw, 36px);
             margin: 20px 0;
             color: #ffa500;
         }
@@ -120,7 +136,7 @@
 
         <div id="startScreen">
             <h1>Flappy Bird</h1>
-            <p>Clique ou pressione ESPAÇO para voar</p>
+            <p>Toque na tela ou pressione ESPAÇO para voar</p>
             <button onclick="startGame()">COMEÇAR</button>
         </div>
 
@@ -131,7 +147,7 @@
         </div>
     </div>
 
-   <script src="script.js"></script>
+    <script src="script.js"></script>
 </body>
 
 </html>
