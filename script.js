@@ -144,8 +144,11 @@ function drawBase() {
 }
 
 function updateBird(delta) {
-    bird.velocity += bird.gravity * delta * 60;
-    bird.y += bird.velocity * delta * 60;
+    // Normalizar delta para 60 FPS como referência
+    const normalizedDelta = delta * 60;
+    
+    bird.velocity += bird.gravity * normalizedDelta;
+    bird.y += bird.velocity * normalizedDelta;
 
     if (bird.y + bird.height > base.y) {
         bird.y = base.y - bird.height;
@@ -159,6 +162,9 @@ function updateBird(delta) {
 }
 
 function updatePipes(delta) {
+    // Normalizar delta para 60 FPS como referência
+    const normalizedDelta = delta * 60;
+    
     if (frameCount % 90 === 0) {
         const minTop = 80;
         const maxTop = base.y - pipeGap - 80;
@@ -168,7 +174,7 @@ function updatePipes(delta) {
     }
 
     pipes.forEach((pipe, index) => {
-        pipe.x -= pipeSpeed * delta * 60;
+        pipe.x -= pipeSpeed * normalizedDelta;
 
         // Tocar som de ponto
         if (!pipe.scored && pipe.x + pipeWidth < bird.x) {
@@ -195,8 +201,12 @@ function gameLoop(timestamp) {
     if (!gameRunning) return;
 
     if (!lastTime) lastTime = timestamp;
-    const delta = (timestamp - lastTime) / 1000; // tempo em segundos
+    let delta = (timestamp - lastTime) / 1000; // tempo em segundos
     lastTime = timestamp;
+
+    // IMPORTANTE: Limitar delta para evitar grandes saltos
+    // Isso previne velocidade inconsistente entre diferentes telas
+    delta = Math.min(delta, 0.1); // Máximo de 100ms por frame
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
