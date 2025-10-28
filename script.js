@@ -44,6 +44,9 @@ Object.entries(sprites).forEach(([key, img]) => {
     img.onload = () => {
         console.log(`Imagem carregada: ${key}`);
         imagesLoaded++;
+        if (imagesLoaded === totalImages) {
+            console.log("Todas as imagens carregadas!");
+        }
     };
     img.onerror = () => {
         console.error(`Erro ao carregar imagem: ${img.src}`);
@@ -88,6 +91,7 @@ let frameCount = 0;
 let pipeGap = 130;
 let pipeWidth = 52;
 let pipeSpeed = 2;
+let lastTime = 0;
 
 function drawBird() {
     const birdSprites = [sprites.birdDown, sprites.birdMid, sprites.birdUp];
@@ -139,9 +143,9 @@ function drawBase() {
     }
 }
 
-function updateBird() {
-    bird.velocity += bird.gravity;
-    bird.y += bird.velocity;
+function updateBird(delta) {
+    bird.velocity += bird.gravity * delta * 60;
+    bird.y += bird.velocity * delta * 60;
 
     if (bird.y + bird.height > base.y) {
         bird.y = base.y - bird.height;
@@ -154,22 +158,17 @@ function updateBird() {
     }
 }
 
-function updatePipes() {
+function updatePipes(delta) {
     if (frameCount % 90 === 0) {
         const minTop = 80;
         const maxTop = base.y - pipeGap - 80;
         const top = Math.random() * (maxTop - minTop) + minTop;
 
-        pipes.push({
-            x: canvas.width,
-            top: top,
-            bottom: top + pipeGap,
-            scored: false
-        });
+        pipes.push({ x: canvas.width, top: top, bottom: top + pipeGap, scored: false });
     }
 
     pipes.forEach((pipe, index) => {
-        pipe.x -= pipeSpeed;
+        pipe.x -= pipeSpeed * delta * 60;
 
         // Tocar som de ponto
         if (!pipe.scored && pipe.x + pipeWidth < bird.x) {
@@ -177,7 +176,7 @@ function updatePipes() {
             document.getElementById('score').textContent = score;
             pipe.scored = true;
             sounds.point.currentTime = 0;
-            sounds.point.play();
+            sounds.point.play().catch(e => console.log("Erro ao tocar som:", e));
         }
 
         if (pipe.x + pipeWidth < 0) pipes.splice(index, 1);
@@ -192,8 +191,12 @@ function updatePipes() {
     });
 }
 
-function gameLoop() {
+function gameLoop(timestamp) {
     if (!gameRunning) return;
+
+    if (!lastTime) lastTime = timestamp;
+    const delta = (timestamp - lastTime) / 1000; // tempo em segundos
+    lastTime = timestamp;
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
@@ -202,8 +205,8 @@ function gameLoop() {
     drawBase();
     drawBird();
 
-    updateBird();
-    updatePipes();
+    updateBird(delta);
+    updatePipes(delta);
 
     frameCount++;
     requestAnimationFrame(gameLoop);
@@ -214,7 +217,7 @@ function jump() {
         bird.velocity = bird.jump;
         // Som de pulo
         sounds.wing.currentTime = 0;
-        sounds.wing.play();
+        sounds.wing.play().catch(e => console.log("Erro ao tocar som:", e));
     }
 }
 
@@ -224,16 +227,18 @@ function startGame() {
     document.getElementById('startScreen').classList.add('hidden');
     document.getElementById('gameOverScreen').classList.add('hidden');
 
-    bird.y = 0;
-    bird.velocity = -10;
+    // Resetar posição do bird (meio da tela, não no topo)
+    bird.y = 250;
+    bird.velocity = 0;
     pipes = [];
     score = 0;
     frameCount = 0;
     base.x = 0;
+    lastTime = 0; // IMPORTANTE: Resetar lastTime
     document.getElementById('score').textContent = '0';
 
     gameRunning = true;
-    gameLoop();
+    requestAnimationFrame(gameLoop);
 }
 
 function restartGame() {
@@ -246,7 +251,7 @@ function gameOver() {
 
     // Som de morte
     sounds.die.currentTime = 0;
-    sounds.die.play();
+    sounds.die.play().catch(e => console.log("Erro ao tocar som:", e));
 
     document.getElementById('finalScore').textContent = `Pontuação: ${score}`;
     document.getElementById('gameOverScreen').classList.remove('hidden');
