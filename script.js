@@ -7,11 +7,11 @@ const ctx = canvas.getContext('2d');
 function resizeCanvas() {
     const container = document.getElementById('gameContainer');
     const rect = container.getBoundingClientRect();
-    
+
     // Manter proporção 2:3 (largura:altura)
     canvas.width = 400;
     canvas.height = 600;
-    
+
     // Desabilitar suavização para manter visual pixelado
     ctx.imageSmoothingEnabled = false;
 }
@@ -160,7 +160,7 @@ function drawBase() {
 function updateBird(delta) {
     // Normalizar delta para 60 FPS como referência
     const normalizedDelta = delta * 60;
-    
+
     bird.velocity += bird.gravity * normalizedDelta;
     bird.y += bird.velocity * normalizedDelta;
 
@@ -178,9 +178,9 @@ function updateBird(delta) {
 function updatePipes(delta) {
     // Normalizar delta para 60 FPS como referência
     const normalizedDelta = delta * 60;
-    
-    // Ajustar frequência de spawn dos canos (aumentado de 90 para 120 frames)
-    if (frameCount % 120 === 0) {
+
+    // Ajustar frequência de spawn dos canos (aumentado para 150 frames = ~2.5 segundos a 60fps)
+    if (frameCount % 150 === 0) {
         const minTop = 80;
         const maxTop = base.y - pipeGap - 80;
         const top = Math.random() * (maxTop - minTop) + minTop;
