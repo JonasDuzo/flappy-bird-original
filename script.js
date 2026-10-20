@@ -1,318 +1,504 @@
-console.log("Carregado!");
+'use strict';
 
+/* ==========================================================================
+   FLAPPY BIRD - versão otimizada para desktop
+
+   - Tudo é calculado em TEMPO REAL (px/s), então o jogo roda igual em
+     60, 144 ou 240 Hz (o original contava frames).
+   - O canvas é desenhado em pixels físicos da tela (com devicePixelRatio),
+     sempre na proporção 2:3, ocupando o máximo possível da janela.
+   - Entrada por pointerdown/keydown (sem esperar soltar o botão).
+   - Sons via Web Audio API (baixa latência, sobrepõem sem cortar).
+   ========================================================================== */
+
+// ---------------------------------------------------------------------------
+// Constantes (unidades lógicas: o mundo do jogo tem 400x600)
+// ---------------------------------------------------------------------------
+const W = 400;
+const H = 600;
+const BASE_W = 336;
+const BASE_H = 112;
+const GROUND_Y = H - BASE_H;      // 488
+const BG_W = 288;
+const BG_H = 512;
+
+const BIRD_W = 34;
+const BIRD_H = 24;
+const BIRD_X = 80;
+const BIRD_START_Y = 250;
+const HIT_PAD = 5;                // folga na hitbox do pássaro (igual ao original)
+
+const PIPE_W = 52;
+const PIPE_H = 320;               // altura do sprite do cano
+const PIPE_GAP = 130;
+const PIPE_SPACING = 300;         // distância entre canos (150 frames x 2 px no original)
+const PIPE_MIN_TOP = 80;
+
+// Física em px/s. Calibrada para reproduzir exatamente o arco do original
+// (60 Hz, gravidade 0.5, pulo -9): gravidade 0.5*60*60 = 1800 px/s²,
+// pulo -8.75*60 = -525 px/s (o original soma a gravidade antes de mover).
+const GRAVITY = 1800;
+const JUMP_VELOCITY = -525;
+const SCROLL_SPEED = 120;         // canos e chão (2 px/frame a 60 Hz)
+
+const WING_FPS = 12;              // troca de sprite das asas por segundo
+const MAX_DT = 1 / 20;            // limita saltos após travadas
+const DIVE_ROT = 1.5;             // rotação (rad) do pássaro caindo morto
+const RESTART_GUARD_MS = 400;     // evita reiniciar sem querer ao morrer spamando espaço
+
+const STATE = { READY: 0, PLAYING: 1, DYING: 2, OVER: 3 };
+
+// ---------------------------------------------------------------------------
+// Elementos da página
+// ---------------------------------------------------------------------------
 const canvas = document.getElementById('gameCanvas');
-const ctx = canvas.getContext('2d');
+const ctx = canvas.getContext('2d', { alpha: false }); // fundo opaco: composição mais rápida
+const container = document.getElementById('gameContainer');
+const scoreEl = document.getElementById('score');
+const startScreen = document.getElementById('startScreen');
+const pauseScreen = document.getElementById('pauseScreen');
+const overScreen = document.getElementById('gameOverScreen');
+const finalScoreEl = document.getElementById('finalScore');
+const startBtn = document.getElementById('startBtn');
+const restartBtn = document.getElementById('restartBtn');
 
-// Ajusta o tamanho do canvas e desativa a suavização para manter o estilo pixelado
-function resizeCanvas() {
-    const container = document.getElementById('gameContainer');
-    const rect = container.getBoundingClientRect();
+// ---------------------------------------------------------------------------
+// Áudio: Web Audio (baixa latência). Se não for possível (ex.: abrindo o
+// index.html direto do disco, onde fetch() é bloqueado), usa um pool de <audio>.
+// ---------------------------------------------------------------------------
+const audio = (() => {
+    const FILES = { wing: 'audio/wing.mp3', point: 'audio/point.mp3', die: 'audio/die.mp3' };
+    const POOL_SIZE = 4;
+    let actx = null;
+    const buffers = {};
+    const pools = {};
 
-    // Define proporção fixa 2:3 (largura x altura)
-    canvas.width = 400;
-    canvas.height = 600;
+    function useFallback() {
+        for (const [name, src] of Object.entries(FILES)) {
+            const list = [];
+            for (let i = 0; i < POOL_SIZE; i++) {
+                const a = new Audio(src);
+                a.preload = 'auto';
+                list.push(a);
+            }
+            pools[name] = { list, next: 0 };
+        }
+    }
 
-    // Mantém aparência pixelada dos sprites
-    ctx.imageSmoothingEnabled = false;
+    async function loadBuffers() {
+        await Promise.all(Object.entries(FILES).map(async ([name, src]) => {
+            const res = await fetch(src);
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            buffers[name] = await actx.decodeAudioData(await res.arrayBuffer());
+        }));
+    }
+
+    function init() {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) { useFallback(); return; }
+        try {
+            actx = new AC({ latencyHint: 'interactive' });
+        } catch (e) {
+            useFallback();
+            return;
+        }
+        loadBuffers().catch(() => {
+            actx.close().catch(() => { });
+            actx = null;
+            useFallback();
+        });
+    }
+
+    function play(name) {
+        if (actx && buffers[name]) {
+            if (actx.state === 'suspended') actx.resume(); // política de autoplay: 1º gesto libera
+            const src = actx.createBufferSource();
+            src.buffer = buffers[name];
+            src.connect(actx.destination);
+            src.start(0);
+            return;
+        }
+        const pool = pools[name];
+        if (pool) {
+            const a = pool.list[pool.next];
+            pool.next = (pool.next + 1) % pool.list.length;
+            a.currentTime = 0;
+            const p = a.play();
+            if (p) p.catch(() => { });
+        }
+    }
+
+    return { init, play };
+})();
+
+// ---------------------------------------------------------------------------
+// Sprites
+// ---------------------------------------------------------------------------
+const sprites = {};
+let wingFrames = [];
+
+async function loadImage(src) {
+    const img = new Image();
+    img.src = src;
+    await img.decode(); // carrega e decodifica antes do 1º frame (sem engasgos)
+    return img;
 }
 
-// Chama a função inicialmente e também quando a janela é redimensionada
-resizeCanvas();
-window.addEventListener('resize', resizeCanvas);
+// Cano de cima = cano normal espelhado. Espelha uma vez só, na carga.
+function makeFlipped(img) {
+    const c = document.createElement('canvas');
+    c.width = img.naturalWidth;
+    c.height = img.naturalHeight;
+    const g = c.getContext('2d');
+    g.translate(0, c.height);
+    g.scale(1, -1);
+    g.drawImage(img, 0, 0);
+    return c;
+}
 
-// Carregamento de sons do jogo
-const sounds = {
-    die: new Audio('audio/die.mp3'),
-    point: new Audio('audio/point.mp3'),
-    wing: new Audio('audio/wing.mp3')
-};
-
-// Pré-carrega os sons para reduzir latência
-Object.values(sounds).forEach(sound => {
-    sound.preload = 'auto';
-    sound.load();
-});
-
-// Carregamento de imagens (sprites)
-let imagesLoaded = 0;
-let totalImages;
-
-const sprites = {
-    birdUp: new Image(),
-    birdMid: new Image(),
-    birdDown: new Image(),
-    backgroundDay: new Image(),
-    backgroundNight: new Image(),
-    base: new Image(),
-    pipeGreen: new Image(),
-    pipeRed: new Image(),
-    message: new Image(),
-    gameover: new Image()
-};
-
-totalImages = Object.keys(sprites).length;
-
-// Contabiliza o carregamento de cada imagem
-Object.entries(sprites).forEach(([key, img]) => {
-    img.onload = () => {
-        console.log(`Imagem carregada: ${key}`);
-        imagesLoaded++;
-        if (imagesLoaded === totalImages) {
-            console.log("Todas as imagens carregadas!");
-        }
+async function loadAssets() {
+    const files = {
+        bg: 'sprites/background-day.png',
+        base: 'sprites/base.png',
+        pipe: 'sprites/pipe-green.png',
+        birdUp: 'sprites/yellowbird-upflap.png',
+        birdMid: 'sprites/yellowbird-midflap.png',
+        birdDown: 'sprites/yellowbird-downflap.png'
     };
-    img.onerror = () => {
-        console.error(`Erro ao carregar imagem: ${img.src}`);
-    };
-});
+    const entries = await Promise.all(
+        Object.entries(files).map(async ([key, src]) => [key, await loadImage(src)])
+    );
+    for (const [key, img] of entries) sprites[key] = img;
+    sprites.pipeFlipped = makeFlipped(sprites.pipe);
+    wingFrames = [sprites.birdMid, sprites.birdUp, sprites.birdMid, sprites.birdDown];
+}
 
-// Caminhos das imagens
-sprites.birdUp.src = 'sprites/yellowbird-upflap.png';
-sprites.birdMid.src = 'sprites/yellowbird-midflap.png';
-sprites.birdDown.src = 'sprites/yellowbird-downflap.png';
-sprites.backgroundDay.src = 'sprites/background-day.png';
-sprites.base.src = 'sprites/base.png';
-sprites.pipeGreen.src = 'sprites/pipe-green.png';
-sprites.message.src = 'sprites/message.png';
-sprites.gameover.src = 'sprites/gameover.png';
+// ---------------------------------------------------------------------------
+// Tamanho do canvas: maior bloco 2:3 que cabe na janela, em pixels FÍSICOS
+// inteiros. Assim o canvas fica nítido em qualquer monitor/zoom (1:1 com a tela).
+// ---------------------------------------------------------------------------
+let k = 1;                // pixels do canvas por unidade lógica
+let needsResize = true;
+let dirty = true;         // precisa redesenhar mesmo com o jogo parado
 
-// Configurações iniciais do jogo
-let bird = {
-    x: 80,
-    y: 250,
-    width: 34,
-    height: 24,
-    velocity: 0,
-    gravity: 0.5,
-    jump: -9,
-    frame: 0,
-    animationSpeed: 5
-};
+function applySize() {
+    needsResize = false;
+    const dpr = window.devicePixelRatio || 1;
+    const m = Math.max(1, Math.floor(Math.min(window.innerWidth * dpr / 2, window.innerHeight * dpr / 3)));
+    const bw = m * 2;
+    const bh = m * 3;
 
-let base = {
-    x: 0,
-    y: canvas.height - 112,
-    width: 336,
-    height: 112,
-    speed: 2
-};
+    if (canvas.width !== bw || canvas.height !== bh) {
+        canvas.width = bw;
+        canvas.height = bh;
+    }
+    ctx.imageSmoothingEnabled = false; // redimensionar o canvas reseta isso
 
-let pipes = [];
+    const cssW = bw / dpr;
+    container.style.width = cssW + 'px';
+    container.style.height = (bh / dpr) + 'px';
+    container.style.setProperty('--s', (cssW / W).toFixed(4));
+
+    k = bw / W;
+    dirty = true;
+}
+
+window.addEventListener('resize', () => { needsResize = true; });
+
+// Detecta mudança de zoom / troca de monitor com escala diferente
+function watchDpr() {
+    const mq = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+    mq.addEventListener('change', () => { needsResize = true; watchDpr(); }, { once: true });
+}
+
+// ---------------------------------------------------------------------------
+// Estado do jogo
+// ---------------------------------------------------------------------------
+let state = STATE.READY;
+let paused = false;
 let score = 0;
-let gameRunning = false;
-let frameCount = 0;
-let pipeGap = 130;
-let pipeWidth = 52;
-let pipeSpeed = 2;
-let lastTime = 0;
+let scroll = 0;           // deslocamento acumulado do chão (px lógicos)
+let wingTime = 0;
+let bobTime = 0;
+let overAt = 0;
+const bird = { y: BIRD_START_Y, vy: 0, rot: 0 };
+const pipes = [];
 
-// Desenha o pássaro animado e rotaciona conforme a velocidade
-function drawBird() {
-    const birdSprites = [sprites.birdDown, sprites.birdMid, sprites.birdUp];
-    const currentFrame = Math.floor(frameCount / bird.animationSpeed) % 3;
+function clamp(v, lo, hi) { return v < lo ? lo : (v > hi ? hi : v); }
 
-    ctx.save();
-    ctx.translate(bird.x + bird.width / 2, bird.y + bird.height / 2);
-
-    // Inclina o pássaro dependendo da velocidade
-    let rotation = 0;
-    if (bird.velocity < -5) rotation = -Math.PI / 6;
-    else if (bird.velocity > 5) rotation = Math.PI / 4;
-    ctx.rotate(rotation);
-
-    // Desenha o sprite atual
-    ctx.drawImage(birdSprites[currentFrame], -bird.width / 2, -bird.height / 2, bird.width, bird.height);
-    ctx.restore();
-}
-
-// Desenha um par de canos (superior e inferior)
-function drawPipe(pipe) {
-    // Cano de cima (invertido)
-    ctx.save();
-    ctx.translate(pipe.x + pipeWidth / 2, pipe.top / 2);
-    ctx.scale(1, -1);
-    ctx.drawImage(sprites.pipeGreen, -pipeWidth / 2, -pipe.top / 2, pipeWidth, pipe.top);
-    ctx.restore();
-
-    // Cano de baixo
-    ctx.drawImage(sprites.pipeGreen, pipe.x, pipe.bottom, pipeWidth, canvas.height - pipe.bottom - base.height);
-}
-
-// Desenha o fundo repetido no canvas
-function drawBackground() {
-    const bgWidth = 288;
-    const bgHeight = 512;
-    const scale = canvas.height / bgHeight;
-    const scaledWidth = bgWidth * scale;
-
-    // Repete o fundo horizontalmente
-    for (let i = 0; i < Math.ceil(canvas.width / scaledWidth) + 1; i++) {
-        ctx.drawImage(sprites.backgroundDay, i * scaledWidth, 0, scaledWidth, canvas.height);
-    }
-}
-
-// Desenha e move o chão (base)
-function drawBase() {
-    const scale = base.height / 112;
-    const scaledWidth = base.width * scale;
-
-    // Desenha duas bases lado a lado para criar looping
-    ctx.drawImage(sprites.base, base.x, base.y, scaledWidth, base.height);
-    ctx.drawImage(sprites.base, base.x + scaledWidth, base.y, scaledWidth, base.height);
-
-    // Move a base para a esquerda durante o jogo
-    if (gameRunning) {
-        base.x -= base.speed;
-        if (base.x <= -scaledWidth) base.x = 0;
-    }
-}
-
-// Atualiza a física do pássaro (gravidade, colisões)
-function updateBird(delta) {
-    // Normaliza delta para 60 FPS
-    const normalizedDelta = delta * 60;
-
-    bird.velocity += bird.gravity * normalizedDelta;
-    bird.y += bird.velocity * normalizedDelta;
-
-    // Colisão com o chão
-    if (bird.y + bird.height > base.y) {
-        bird.y = base.y - bird.height;
-        bird.velocity = 0;
-        gameOver();
-    }
-
-    // Limita o topo da tela
-    if (bird.y < 0) {
-        bird.y = 0;
-        bird.velocity = 0;
-    }
-}
-
-// Gera e movimenta os canos, verifica colisões e pontuação
-function updatePipes(delta) {
-    const normalizedDelta = delta * 60;
-
-    // Cria novos canos periodicamente (~a cada 150 frames)
-    if (frameCount % 150 === 0) {
-        const minTop = 80;
-        const maxTop = base.y - pipeGap - 80;
-        const top = Math.random() * (maxTop - minTop) + minTop;
-
-        pipes.push({ x: canvas.width, top: top, bottom: top + pipeGap, scored: false });
-    }
-
-    pipes.forEach((pipe, index) => {
-        // Movimento dos canos
-        pipe.x -= pipeSpeed * normalizedDelta;
-
-        // Contagem de pontos
-        if (!pipe.scored && pipe.x + pipeWidth < bird.x) {
-            score++;
-            document.getElementById('score').textContent = score;
-            pipe.scored = true;
-            sounds.point.currentTime = 0;
-            sounds.point.play().catch(e => console.log("Erro ao tocar som:", e));
-        }
-
-        // Remove canos fora da tela
-        if (pipe.x + pipeWidth < 0) pipes.splice(index, 1);
-
-        // Detecta colisão com o pássaro
-        if (
-            bird.x + 5 < pipe.x + pipeWidth &&
-            bird.x + bird.width - 5 > pipe.x &&
-            (bird.y + 5 < pipe.top || bird.y + bird.height - 5 > pipe.bottom)
-        ) {
-            gameOver();
-        }
-    });
-}
-
-// Loop principal do jogo (renderização + atualização)
-function gameLoop(timestamp) {
-    if (!gameRunning) return;
-
-    if (!lastTime) lastTime = timestamp;
-    let delta = (timestamp - lastTime) / 1000; // tempo entre frames
-    lastTime = timestamp;
-
-    // Limita delta para evitar saltos bruscos
-    delta = Math.min(delta, 0.1);
-
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    // Desenho das camadas do jogo
-    drawBackground();
-    pipes.forEach(pipe => drawPipe(pipe));
-    drawBase();
-    drawBird();
-
-    // Atualiza estado dos objetos
-    updateBird(delta);
-    updatePipes(delta);
-
-    frameCount++;
-    requestAnimationFrame(gameLoop);
-}
-
-// Faz o pássaro pular e toca o som de batida de asa
-function jump() {
-    if (gameRunning) {
-        bird.velocity = bird.jump;
-        sounds.wing.currentTime = 0;
-        sounds.wing.play().catch(e => console.log("Erro ao tocar som:", e));
-    }
-}
-
-// Inicializa ou reinicia o jogo do zero
-function startGame() {
-    console.log("startGame() foi chamado!");
-
-    document.getElementById('startScreen').classList.add('hidden');
-    document.getElementById('gameOverScreen').classList.add('hidden');
-
-    // Reseta estado do jogo
-    bird.y = 250;
-    bird.velocity = 0;
-    pipes = [];
+function resetWorld() {
+    bird.y = BIRD_START_Y;
+    bird.vy = 0;
+    bird.rot = 0;
+    pipes.length = 0;
     score = 0;
-    frameCount = 0;
-    base.x = 0;
-    lastTime = 0;
-    document.getElementById('score').textContent = '0';
-
-    gameRunning = true;
-    requestAnimationFrame(gameLoop);
+    wingTime = 0;
+    scoreEl.textContent = '0';
 }
 
-// Reinicia o jogo chamando startGame()
-function restartGame() {
-    startGame();
+function flap() {
+    bird.vy = JUMP_VELOCITY;
+    audio.play('wing');
 }
 
-// Finaliza o jogo e exibe a tela de Game Over
-function gameOver() {
-    if (!gameRunning) return;
-    gameRunning = false;
-
-    sounds.die.currentTime = 0;
-    sounds.die.play().catch(e => console.log("Erro ao tocar som:", e));
-
-    document.getElementById('finalScore').textContent = `Pontuação: ${score}`;
-    document.getElementById('gameOverScreen').classList.remove('hidden');
+function startRun() {
+    if (state === STATE.PLAYING || state === STATE.DYING) return;
+    if (state === STATE.OVER) resetWorld();
+    state = STATE.PLAYING;
+    startScreen.classList.add('hidden');
+    overScreen.classList.add('hidden');
+    scoreEl.classList.remove('hidden');
+    flap(); // o início já conta como a primeira batida de asa
 }
 
-// Controles do jogo (mouse, toque, teclado)
-canvas.addEventListener('click', jump);
-canvas.addEventListener('touchstart', (e) => {
+// Colisão: o pássaro morre, mas continua caindo até o chão (como no clássico)
+function kill() {
+    if (state !== STATE.PLAYING) return;
+    state = STATE.DYING;
+    if (bird.vy < 0) bird.vy = 0;
+    audio.play('die');
+}
+
+function finishRun() {
+    state = STATE.OVER;
+    dirty = true;
+    overAt = performance.now();
+    bird.rot = DIVE_ROT;
+    finalScoreEl.textContent = `Pontuação: ${score}`;
+    scoreEl.classList.add('hidden');
+    overScreen.classList.remove('hidden');
+}
+
+function pause() {
+    if (paused || state !== STATE.PLAYING) return;
+    paused = true;
+    dirty = true;
+    pauseScreen.classList.remove('hidden');
+}
+
+function resume() {
+    if (!paused) return;
+    paused = false;
+    pauseScreen.classList.add('hidden');
+}
+
+// ---------------------------------------------------------------------------
+// Atualização (dt em segundos)
+// ---------------------------------------------------------------------------
+
+// Integração exata para aceleração constante: o resultado não depende do dt.
+// Retorna true se o pássaro encostou no chão.
+function stepBird(dt) {
+    bird.y += bird.vy * dt + 0.5 * GRAVITY * dt * dt;
+    bird.vy += GRAVITY * dt;
+
+    if (bird.y < 0) {            // teto
+        bird.y = 0;
+        bird.vy = 0;
+    }
+    if (bird.y + BIRD_H >= GROUND_Y) {
+        bird.y = GROUND_Y - BIRD_H;
+        bird.vy = 0;
+        return true;
+    }
+    return false;
+}
+
+function updatePipes(dt) {
+    // Novo cano a cada PIPE_SPACING px (espaçamento exato, independe do FPS).
+    // Nasce ANTES de mover, para ter exatamente a mesma posição em qualquer FPS.
+    const last = pipes[pipes.length - 1];
+    if (!last || last.x <= W - PIPE_SPACING) {
+        const maxTop = GROUND_Y - PIPE_GAP - 80;
+        const top = PIPE_MIN_TOP + Math.random() * (maxTop - PIPE_MIN_TOP);
+        pipes.push({ x: last ? last.x + PIPE_SPACING : W, top: top, bottom: top + PIPE_GAP, scored: false });
+    }
+
+    const dx = SCROLL_SPEED * dt;
+    for (let i = 0; i < pipes.length; i++) pipes[i].x -= dx;
+
+    const bl = BIRD_X + HIT_PAD;
+    const br = BIRD_X + BIRD_W - HIT_PAD;
+    const bt = bird.y + HIT_PAD;
+    const bb = bird.y + BIRD_H - HIT_PAD;
+    let hit = false;
+
+    for (let i = pipes.length - 1; i >= 0; i--) { // de trás pra frente: splice seguro
+        const p = pipes[i];
+
+        if (p.x + PIPE_W < 0) {
+            pipes.splice(i, 1);
+            continue;
+        }
+        if (!p.scored && p.x + PIPE_W < BIRD_X) {
+            p.scored = true;
+            score++;
+            scoreEl.textContent = score; // só toca no DOM quando a pontuação muda
+            audio.play('point');
+        }
+        if (br > p.x && bl < p.x + PIPE_W && (bt < p.top || bb > p.bottom)) hit = true;
+    }
+    if (hit) kill();
+}
+
+function update(dt) {
+    switch (state) {
+        case STATE.READY:
+            bobTime += dt;
+            wingTime += dt;
+            scroll += SCROLL_SPEED * dt;
+            bird.y = BIRD_START_Y + Math.sin(bobTime * 5) * 6;
+            break;
+
+        case STATE.PLAYING:
+            wingTime += dt;
+            scroll += SCROLL_SPEED * dt;
+            if (stepBird(dt)) { kill(); finishRun(); return; }
+            updatePipes(dt);
+            break;
+
+        case STATE.DYING:
+            if (stepBird(dt)) { finishRun(); return; }
+            break;
+
+        default: // OVER: nada se move
+            return;
+    }
+
+    // Inclinação suave conforme a velocidade vertical
+    const target = state >= STATE.DYING ? DIVE_ROT : clamp(bird.vy * 0.001, -0.45, 1.2);
+    bird.rot += (target - bird.rot) * (1 - Math.exp(-dt * 18));
+}
+
+// ---------------------------------------------------------------------------
+// Desenho
+// ---------------------------------------------------------------------------
+function render() {
+    const bw = canvas.width;
+    const bh = canvas.height;
+
+    // Fundo, canos e chão em coordenadas de pixels físicos INTEIROS:
+    // sem frestas entre blocos e sem "tremida" de pixel ao rolar.
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+
+    const bgTile = Math.ceil(BG_W * bh / BG_H);
+    for (let x = 0; x < bw; x += bgTile) ctx.drawImage(sprites.bg, x, 0, bgTile, bh);
+
+    // Canos no tamanho natural do sprite (o original esticava e distorcia a borda)
+    const pw = Math.round(PIPE_W * k);
+    const ph = Math.round(PIPE_H * k);
+    for (let i = 0; i < pipes.length; i++) {
+        const p = pipes[i];
+        const px = Math.round(p.x * k);
+        ctx.drawImage(sprites.pipeFlipped, px, Math.round(p.top * k) - ph, pw, ph);
+        ctx.drawImage(sprites.pipe, px, Math.round(p.bottom * k), pw, ph);
+    }
+
+    // Chão com rolagem contínua
+    const baseY = Math.round(GROUND_Y * k);
+    const baseH = bh - baseY;
+    const baseTile = Math.round(BASE_W * k);
+    const off = Math.floor((scroll * k) % baseTile);
+    for (let x = -off; x < bw; x += baseTile) ctx.drawImage(sprites.base, x, baseY, baseTile, baseH);
+
+    // Pássaro (sem save/restore: matriz de rotação direta)
+    const frame = wingFrames[Math.floor(wingTime * WING_FPS) % wingFrames.length];
+    const cos = Math.cos(bird.rot) * k;
+    const sin = Math.sin(bird.rot) * k;
+    ctx.setTransform(cos, sin, -sin, cos, (BIRD_X + BIRD_W / 2) * k, (bird.y + BIRD_H / 2) * k);
+    ctx.drawImage(frame, -BIRD_W / 2, -BIRD_H / 2, BIRD_W, BIRD_H);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Loop principal: um requestAnimationFrame, passo variável com dt real
+// ---------------------------------------------------------------------------
+let lastTs = -1;
+
+function frame(ts) {
+    requestAnimationFrame(frame);
+
+    if (needsResize) applySize();
+
+    if (lastTs < 0) lastTs = ts;
+    let dt = (ts - lastTs) / 1000;
+    lastTs = ts;
+    dt = clamp(dt, 0, MAX_DT);
+
+    if (!paused) update(dt);
+
+    // Pausado ou em Game Over nada muda na tela: não gasta GPU redesenhando
+    if (dirty || (!paused && state !== STATE.OVER)) {
+        render();
+        dirty = false;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Controles
+// ---------------------------------------------------------------------------
+function handleAction() { // clique, toque ou espaço
+    if (paused) { resume(); return; }
+    switch (state) {
+        case STATE.READY:
+            startRun();
+            break;
+        case STATE.PLAYING:
+            flap();
+            break;
+        case STATE.OVER:
+            if (performance.now() - overAt > RESTART_GUARD_MS) startRun();
+            break;
+    }
+}
+
+// pointerdown dispara na hora do clique/toque (o "click" só dispara ao soltar)
+container.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0 || e.target.closest('button')) return;
     e.preventDefault();
-    jump();
+    handleAction();
 });
+
+startBtn.addEventListener('click', startRun);
+restartBtn.addEventListener('click', startRun);
 
 document.addEventListener('keydown', (e) => {
-    if (e.code === 'Space') {
-        e.preventDefault();
-        jump();
+    switch (e.code) {
+        case 'Space':
+        case 'ArrowUp':
+        case 'KeyW':
+            e.preventDefault();
+            if (!e.repeat) handleAction(); // segurar a tecla não spamma pulos
+            break;
+        case 'Enter':
+        case 'NumpadEnter':
+            if (paused || state !== STATE.PLAYING) {
+                e.preventDefault();
+                if (!e.repeat) handleAction();
+            }
+            break;
+        case 'KeyP':
+        case 'Escape':
+            if (!e.repeat) { paused ? resume() : pause(); }
+            break;
     }
+});
+
+// Pausa sozinho ao trocar de janela/aba (evita morrer no alt-tab)
+window.addEventListener('blur', pause);
+document.addEventListener('visibilitychange', () => { if (document.hidden) pause(); });
+
+// ---------------------------------------------------------------------------
+// Inicialização
+// ---------------------------------------------------------------------------
+audio.init();
+watchDpr();
+
+loadAssets().then(() => {
+    applySize();
+    startBtn.disabled = false;
+    requestAnimationFrame(frame);
+}).catch((err) => {
+    console.error('Erro ao carregar recursos:', err);
+    startScreen.querySelector('p').textContent = 'Erro ao carregar os recursos do jogo.';
 });

@@ -6,6 +6,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <title>Flappy Bird</title>
     <style>
+        /* --s = tamanho de tela (px) de cada unidade lógica do jogo.
+           O script.js atualiza esse valor a cada redimensionamento, então
+           textos, botões e bordas acompanham o tamanho do canvas. */
+        :root {
+            --s: 1;
+        }
+
         * {
             margin: 0;
             padding: 0;
@@ -13,33 +20,31 @@
             -webkit-tap-highlight-color: transparent;
         }
 
+        html,
         body {
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            min-height: 100vh;
+            height: 100%;
+        }
+
+        body {
+            display: grid;
+            place-items: center;
             background: #000;
             font-family: 'Arial', sans-serif;
             overflow: hidden;
             touch-action: none;
+            user-select: none;
+            -webkit-user-select: none;
         }
 
+        /* Proporção 2:3. O JS ajusta largura/altura para pixels físicos inteiros;
+           isto é só o valor inicial antes do script rodar. */
         #gameContainer {
             position: relative;
-            width: min(400px, 100vw);
-            height: min(600px, 150vw);
-            max-height: 100vh;
+            height: min(100vh, 150vw);
+            aspect-ratio: 2 / 3;
             overflow: hidden;
-            border: 3px solid #000;
-            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
-        }
-
-        @media (max-width: 480px) {
-            #gameContainer {
-                width: 100vw;
-                height: 100vh;
-                border: none;
-            }
+            background: #70c5ce;
+            contain: layout paint style;
         }
 
         #gameCanvas {
@@ -47,79 +52,88 @@
             width: 100%;
             height: 100%;
             image-rendering: pixelated;
-            image-rendering: crisp-edges;
-            image-rendering: -moz-crisp-edges;
-            -ms-interpolation-mode: nearest-neighbor;
         }
 
-        #startScreen,
-        #gameOverScreen {
+        .overlay {
             position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
+            inset: 0;
             display: flex;
             flex-direction: column;
             justify-content: center;
             align-items: center;
-            background: rgba(0, 0, 0, 0.7);
+            background: rgba(0, 0, 0, 0.5);
             color: white;
             z-index: 10;
         }
 
-        #startScreen h1,
-        #gameOverScreen h1 {
-            font-size: clamp(32px, 8vw, 48px);
-            margin-bottom: 20px;
-            text-shadow: 3px 3px 0px #000;
+        .overlay h1 {
+            font-size: calc(48px * var(--s));
+            margin-bottom: calc(20px * var(--s));
+            text-shadow: calc(3px * var(--s)) calc(3px * var(--s)) 0 #000;
         }
 
-        #startScreen p,
-        #gameOverScreen p {
-            font-size: clamp(16px, 4vw, 20px);
-            margin-bottom: 30px;
-            padding: 0 20px;
+        .overlay p {
+            font-size: calc(20px * var(--s));
+            margin-bottom: calc(30px * var(--s));
+            padding: 0 calc(20px * var(--s));
             text-align: center;
         }
 
+        .overlay p.hint {
+            font-size: calc(14px * var(--s));
+            opacity: 0.8;
+            margin-top: calc(-14px * var(--s));
+        }
+
         button {
-            padding: clamp(10px, 3vw, 15px) clamp(30px, 8vw, 40px);
-            font-size: clamp(18px, 5vw, 24px);
+            padding: calc(15px * var(--s)) calc(40px * var(--s));
+            font-family: inherit;
+            font-size: calc(24px * var(--s));
             background: #ffa500;
             color: white;
-            border: 3px solid #000;
-            border-radius: 10px;
+            border: calc(3px * var(--s)) solid #000;
+            border-radius: calc(10px * var(--s));
             cursor: pointer;
             font-weight: bold;
-            box-shadow: 0 5px 0 #cc8400;
+            box-shadow: 0 calc(5px * var(--s)) 0 #cc8400;
             transition: transform 0.1s;
         }
 
-        button:hover {
+        button:hover:not(:disabled) {
             background: #ffb733;
         }
 
-        button:active {
-            transform: translateY(3px);
-            box-shadow: 0 2px 0 #cc8400;
+        button:active:not(:disabled) {
+            transform: translateY(calc(3px * var(--s)));
+            box-shadow: 0 calc(2px * var(--s)) 0 #cc8400;
+        }
+
+        button:focus-visible {
+            outline: calc(3px * var(--s)) solid #fff;
+            outline-offset: calc(3px * var(--s));
+        }
+
+        button:disabled {
+            opacity: 0.6;
+            cursor: default;
         }
 
         #score {
             position: absolute;
-            top: clamp(20px, 5vh, 30px);
+            top: calc(30px * var(--s));
             left: 50%;
             transform: translateX(-50%);
-            font-size: clamp(36px, 10vw, 48px);
+            font-size: calc(48px * var(--s));
             font-weight: bold;
             color: white;
-            text-shadow: 3px 3px 0px #000;
+            text-shadow: calc(3px * var(--s)) calc(3px * var(--s)) 0 #000;
             z-index: 5;
+            pointer-events: none;
         }
 
         #finalScore {
-            font-size: clamp(28px, 7vw, 36px);
-            margin: 20px 0;
+            font-size: calc(36px * var(--s));
+            margin: calc(20px * var(--s)) 0;
             color: #ffa500;
         }
 
@@ -132,18 +146,24 @@
 <body>
     <div id="gameContainer">
         <canvas id="gameCanvas"></canvas>
-        <div id="score">0</div>
+        <div id="score" class="hidden">0</div>
 
-        <div id="startScreen">
+        <div id="startScreen" class="overlay">
             <h1>Flappy Bird</h1>
-            <p>Toque na tela ou pressione ESPAÇO para voar</p>
-            <button onclick="startGame()">COMEÇAR</button>
+            <p>Clique, toque ou pressione ESPAÇO para voar</p>
+            <p class="hint">P ou ESC pausam o jogo</p>
+            <button id="startBtn" type="button" disabled>COMEÇAR</button>
         </div>
 
-        <div id="gameOverScreen" class="hidden">
+        <div id="pauseScreen" class="overlay hidden">
+            <h1>Pausado</h1>
+            <p>Clique ou pressione ESPAÇO para continuar</p>
+        </div>
+
+        <div id="gameOverScreen" class="overlay hidden">
             <h1>Game Over!</h1>
             <div id="finalScore">Pontuação: 0</div>
-            <button onclick="restartGame()">JOGAR NOVAMENTE</button>
+            <button id="restartBtn" type="button">JOGAR NOVAMENTE</button>
         </div>
     </div>
 
