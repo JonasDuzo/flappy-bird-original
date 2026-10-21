@@ -46,13 +46,13 @@ const JUMP_VELOCITY = -525;
 // O vão menor vale para os canos criados depois da mudança de nível.
 const LEVELS = [
     { score: 0,  speed: 120, gap: 140, msg: null },
-    { score: 10, speed: 280, gap: 130, msg: 'MAIS RÁPIDO!' },
-    { score: 20, speed: 400, gap: 80, msg: 'AINDA MAIS DIFÍCIL!' }
+    { score: 11, speed: 220, gap: 135, msg: 'MAIS RÁPIDO!' },
+    { score: 21, speed: 400, gap: 130, msg: 'AINDA MAIS DIFÍCIL!' }
 ];
 const SPEED_EASE = 2.5;           // quão rápido a velocidade acompanha o novo nível
 
 // Cenários: o primeiro troca em SCENERY_START e depois a cada SCENERY_EVERY pontos.
-const SCENERY_START = 30;
+const SCENERY_START = 10;
 const SCENERY_EVERY = 10;
 const SCENERY_FADE = 1.2;         // segundos de transição suave do fundo
 const SCENERIES = [
