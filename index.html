@@ -137,6 +137,34 @@
             color: #ffa500;
         }
 
+        /* Aviso de nível / novo cenário */
+        #toast {
+            position: absolute;
+            top: calc(105px * var(--s));
+            left: 0;
+            right: 0;
+            text-align: center;
+            font-size: calc(26px * var(--s));
+            font-weight: bold;
+            color: #ffa500;
+            text-shadow: calc(2px * var(--s)) calc(2px * var(--s)) 0 #000;
+            z-index: 5;
+            pointer-events: none;
+            opacity: 0;
+        }
+
+        #toast.show {
+            animation: toast 1.8s ease-out;
+        }
+
+        @keyframes toast {
+            0% { opacity: 0; transform: translateY(calc(-10px * var(--s))) scale(0.9); }
+            12% { opacity: 1; transform: translateY(0) scale(1.05); }
+            20% { transform: scale(1); }
+            75% { opacity: 1; }
+            100% { opacity: 0; }
+        }
+
         .hidden {
             display: none !important;
         }
@@ -147,6 +175,7 @@
     <div id="gameContainer">
         <canvas id="gameCanvas"></canvas>
         <div id="score" class="hidden">0</div>
+        <div id="toast"></div>
 
         <div id="startScreen" class="overlay">
             <h1>Flappy Bird</h1>

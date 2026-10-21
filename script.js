@@ -3,6 +3,8 @@
 /* ==========================================================================
    FLAPPY BIRD - versão otimizada para desktop
 
+   - A dificuldade sobe com a pontuação (10 e 20 pontos) e o cenário muda
+     a cada 10 pontos a partir dos 30 (veja LEVELS e SCENERIES abaixo).
    - Tudo é calculado em TEMPO REAL (px/s), então o jogo roda igual em
      60, 144 ou 240 Hz (o original contava frames).
    - O canvas é desenhado em pixels físicos da tela (com devicePixelRatio),
@@ -30,7 +32,6 @@ const HIT_PAD = 5;                // folga na hitbox do pássaro (igual ao origi
 
 const PIPE_W = 52;
 const PIPE_H = 320;               // altura do sprite do cano
-const PIPE_GAP = 130;
 const PIPE_SPACING = 300;         // distância entre canos (150 frames x 2 px no original)
 const PIPE_MIN_TOP = 80;
 
@@ -39,7 +40,27 @@ const PIPE_MIN_TOP = 80;
 // pulo -8.75*60 = -525 px/s (o original soma a gravidade antes de mover).
 const GRAVITY = 1800;
 const JUMP_VELOCITY = -525;
-const SCROLL_SPEED = 120;         // canos e chão (2 px/frame a 60 Hz)
+
+// Dificuldade por pontuação. O nível 0 é idêntico ao jogo original.
+//   speed = velocidade de canos e chão (px/s)   gap = abertura entre os canos (px)
+// O vão menor vale para os canos criados depois da mudança de nível.
+const LEVELS = [
+    { score: 0,  speed: 120, gap: 140, msg: null },
+    { score: 5, speed: 280, gap: 100, msg: 'MAIS RÁPIDO!' },
+    { score: 10, speed: 400, gap: 80, msg: 'AINDA MAIS DIFÍCIL!' }
+];
+const SPEED_EASE = 2.5;           // quão rápido a velocidade acompanha o novo nível
+
+// Cenários: o primeiro troca em SCENERY_START e depois a cada SCENERY_EVERY pontos.
+const SCENERY_START = 30;
+const SCENERY_EVERY = 10;
+const SCENERY_FADE = 1.2;         // segundos de transição suave do fundo
+const SCENERIES = [
+    { bg: 'bgDay',   pipe: 'pipeGreen', pipeFlip: 'pipeGreenFlipped' },
+    { bg: 'bgNight', pipe: 'pipeGreen', pipeFlip: 'pipeGreenFlipped' },
+    { bg: 'bgDay',   pipe: 'pipeRed',   pipeFlip: 'pipeRedFlipped' },
+    { bg: 'bgNight', pipe: 'pipeRed',   pipeFlip: 'pipeRedFlipped' }
+];
 
 const WING_FPS = 12;              // troca de sprite das asas por segundo
 const MAX_DT = 1 / 20;            // limita saltos após travadas
@@ -55,6 +76,7 @@ const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d', { alpha: false }); // fundo opaco: composição mais rápida
 const container = document.getElementById('gameContainer');
 const scoreEl = document.getElementById('score');
+const toastEl = document.getElementById('toast');
 const startScreen = document.getElementById('startScreen');
 const pauseScreen = document.getElementById('pauseScreen');
 const overScreen = document.getElementById('gameOverScreen');
@@ -158,9 +180,11 @@ function makeFlipped(img) {
 
 async function loadAssets() {
     const files = {
-        bg: 'sprites/background-day.png',
+        bgDay: 'sprites/background-day.png',
+        bgNight: 'sprites/background-night.png',
         base: 'sprites/base.png',
-        pipe: 'sprites/pipe-green.png',
+        pipeGreen: 'sprites/pipe-green.png',
+        pipeRed: 'sprites/pipe-red.png',
         birdUp: 'sprites/yellowbird-upflap.png',
         birdMid: 'sprites/yellowbird-midflap.png',
         birdDown: 'sprites/yellowbird-downflap.png'
@@ -169,7 +193,8 @@ async function loadAssets() {
         Object.entries(files).map(async ([key, src]) => [key, await loadImage(src)])
     );
     for (const [key, img] of entries) sprites[key] = img;
-    sprites.pipeFlipped = makeFlipped(sprites.pipe);
+    sprites.pipeGreenFlipped = makeFlipped(sprites.pipeGreen);
+    sprites.pipeRedFlipped = makeFlipped(sprites.pipeRed);
     wingFrames = [sprites.birdMid, sprites.birdUp, sprites.birdMid, sprites.birdDown];
 }
 
@@ -221,6 +246,12 @@ let scroll = 0;           // deslocamento acumulado do chão (px lógicos)
 let wingTime = 0;
 let bobTime = 0;
 let overAt = 0;
+let level = 0;            // índice em LEVELS
+let speed = LEVELS[0].speed; // velocidade atual (acompanha o nível suavemente)
+let sceneryCount = 0;     // quantas trocas de cenário já aconteceram
+let sceneryFrom = 0;      // cenário anterior (para a transição)
+let sceneryFade = 1;      // 0..1; 1 = transição concluída
+let stepDist = 0;         // distância (px) que canos e chão andam neste passo
 const bird = { y: BIRD_START_Y, vy: 0, rot: 0 };
 const pipes = [];
 
@@ -233,7 +264,52 @@ function resetWorld() {
     pipes.length = 0;
     score = 0;
     wingTime = 0;
+    level = 0;
+    speed = LEVELS[0].speed;
+    sceneryCount = 0;
+    sceneryFrom = 0;
+    sceneryFade = 1;
     scoreEl.textContent = '0';
+    toastEl.classList.remove('show');
+}
+
+// Aviso rápido na tela (reinicia a animação CSS a cada chamada)
+function showToast(text) {
+    toastEl.textContent = text;
+    toastEl.classList.remove('show');
+    void toastEl.offsetWidth;
+    toastEl.classList.add('show');
+}
+
+function levelForScore(sc) {
+    let l = 0;
+    for (let i = 0; i < LEVELS.length; i++) if (sc >= LEVELS[i].score) l = i;
+    return l;
+}
+
+function sceneryForScore(sc) {
+    return sc < SCENERY_START ? 0 : 1 + Math.floor((sc - SCENERY_START) / SCENERY_EVERY);
+}
+
+// Chamado a cada ponto: sobe de nível e/ou troca o cenário
+function applyProgress() {
+    let msg = null;
+
+    const lv = levelForScore(score);
+    if (lv !== level) {
+        level = lv;
+        msg = LEVELS[lv].msg;
+    }
+
+    const sc = sceneryForScore(score);
+    if (sc !== sceneryCount) {
+        sceneryFrom = sceneryCount;
+        sceneryCount = sc;
+        sceneryFade = 0;
+        msg = 'NOVO CENÁRIO!';
+    }
+
+    if (msg) showToast(msg);
 }
 
 function flap() {
@@ -266,6 +342,7 @@ function finishRun() {
     bird.rot = DIVE_ROT;
     finalScoreEl.textContent = `Pontuação: ${score}`;
     scoreEl.classList.add('hidden');
+    toastEl.classList.remove('show');
     overScreen.classList.remove('hidden');
 }
 
@@ -309,13 +386,21 @@ function updatePipes(dt) {
     // Nasce ANTES de mover, para ter exatamente a mesma posição em qualquer FPS.
     const last = pipes[pipes.length - 1];
     if (!last || last.x <= W - PIPE_SPACING) {
-        const maxTop = GROUND_Y - PIPE_GAP - 80;
+        const gap = LEVELS[level].gap;
+        const theme = SCENERIES[sceneryCount % SCENERIES.length];
+        const maxTop = GROUND_Y - gap - 80;
         const top = PIPE_MIN_TOP + Math.random() * (maxTop - PIPE_MIN_TOP);
-        pipes.push({ x: last ? last.x + PIPE_SPACING : W, top: top, bottom: top + PIPE_GAP, scored: false });
+        pipes.push({
+            x: last ? last.x + PIPE_SPACING : W,
+            top: top,
+            bottom: top + gap,
+            scored: false,
+            imgTop: sprites[theme.pipeFlip],   // cor do cano definida ao nascer
+            imgBottom: sprites[theme.pipe]
+        });
     }
 
-    const dx = SCROLL_SPEED * dt;
-    for (let i = 0; i < pipes.length; i++) pipes[i].x -= dx;
+    for (let i = 0; i < pipes.length; i++) pipes[i].x -= stepDist;
 
     const bl = BIRD_X + HIT_PAD;
     const br = BIRD_X + BIRD_W - HIT_PAD;
@@ -335,6 +420,7 @@ function updatePipes(dt) {
             score++;
             scoreEl.textContent = score; // só toca no DOM quando a pontuação muda
             audio.play('point');
+            applyProgress();
         }
         if (br > p.x && bl < p.x + PIPE_W && (bt < p.top || bb > p.bottom)) hit = true;
     }
@@ -342,17 +428,27 @@ function updatePipes(dt) {
 }
 
 function update(dt) {
+    if (sceneryFade < 1) sceneryFade = Math.min(1, sceneryFade + dt / SCENERY_FADE);
+
     switch (state) {
         case STATE.READY:
             bobTime += dt;
             wingTime += dt;
-            scroll += SCROLL_SPEED * dt;
+            scroll += speed * dt;
             bird.y = BIRD_START_Y + Math.sin(bobTime * 5) * 6;
             break;
 
         case STATE.PLAYING:
             wingTime += dt;
-            scroll += SCROLL_SPEED * dt;
+            {
+                // A velocidade se aproxima do alvo de forma exponencial; a distância
+                // percorrida é a integral exata disso, então não depende do FPS.
+                const target = LEVELS[level].speed;
+                const e = Math.exp(-dt * SPEED_EASE);
+                stepDist = target * dt + (speed - target) * (1 - e) / SPEED_EASE;
+                speed = target + (speed - target) * e;
+                scroll += stepDist;
+            }
             if (stepBird(dt)) { kill(); finishRun(); return; }
             updatePipes(dt);
             break;
@@ -382,7 +478,14 @@ function render() {
     ctx.setTransform(1, 0, 0, 1, 0, 0);
 
     const bgTile = Math.ceil(BG_W * bh / BG_H);
-    for (let x = 0; x < bw; x += bgTile) ctx.drawImage(sprites.bg, x, 0, bgTile, bh);
+    const scenery = SCENERIES[sceneryCount % SCENERIES.length];
+    if (sceneryFade < 1) { // transição: fundo antigo por baixo, novo aparecendo por cima
+        const old = sprites[SCENERIES[sceneryFrom % SCENERIES.length].bg];
+        for (let x = 0; x < bw; x += bgTile) ctx.drawImage(old, x, 0, bgTile, bh);
+        ctx.globalAlpha = sceneryFade;
+    }
+    for (let x = 0; x < bw; x += bgTile) ctx.drawImage(sprites[scenery.bg], x, 0, bgTile, bh);
+    ctx.globalAlpha = 1;
 
     // Canos no tamanho natural do sprite (o original esticava e distorcia a borda)
     const pw = Math.round(PIPE_W * k);
@@ -390,8 +493,8 @@ function render() {
     for (let i = 0; i < pipes.length; i++) {
         const p = pipes[i];
         const px = Math.round(p.x * k);
-        ctx.drawImage(sprites.pipeFlipped, px, Math.round(p.top * k) - ph, pw, ph);
-        ctx.drawImage(sprites.pipe, px, Math.round(p.bottom * k), pw, ph);
+        ctx.drawImage(p.imgTop, px, Math.round(p.top * k) - ph, pw, ph);
+        ctx.drawImage(p.imgBottom, px, Math.round(p.bottom * k), pw, ph);
     }
 
     // Chão com rolagem contínua
@@ -427,8 +530,8 @@ function frame(ts) {
 
     if (!paused) update(dt);
 
-    // Pausado ou em Game Over nada muda na tela: não gasta GPU redesenhando
-    if (dirty || (!paused && state !== STATE.OVER)) {
+    // Pausado ou em Game Over (sem transição) nada muda: não gasta GPU redesenhando
+    if (dirty || (!paused && (state !== STATE.OVER || sceneryFade < 1))) {
         render();
         dirty = false;
     }
