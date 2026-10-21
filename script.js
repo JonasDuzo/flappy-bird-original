@@ -46,8 +46,8 @@ const JUMP_VELOCITY = -525;
 // O vão menor vale para os canos criados depois da mudança de nível.
 const LEVELS = [
     { score: 0,  speed: 120, gap: 140, msg: null },
-    { score: 5, speed: 280, gap: 100, msg: 'MAIS RÁPIDO!' },
-    { score: 10, speed: 400, gap: 80, msg: 'AINDA MAIS DIFÍCIL!' }
+    { score: 10, speed: 280, gap: 130, msg: 'MAIS RÁPIDO!' },
+    { score: 20, speed: 400, gap: 80, msg: 'AINDA MAIS DIFÍCIL!' }
 ];
 const SPEED_EASE = 2.5;           // quão rápido a velocidade acompanha o novo nível
 
